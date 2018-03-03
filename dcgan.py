@@ -3,6 +3,7 @@ import matplotlib.pyplot as plt
 from tensorflow.examples.tutorials.mnist import input_data
 import os
 import math
+import datetime
 
 # Just to avoid warnings. Disable this from time to time during development
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
@@ -11,15 +12,14 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 mnist = input_data.read_data_sets("MNIST_data/")
 
 # Hyperparams
-mnist_batch_size = 1
-mnist_batch_amount = 1
-learning_rate = 0.0002
+mnist_batch_size = 50
+mnist_batch_amount = 10000
+learning_rate = 0.00002
 lrelu_slope = 0.2
+beta1_momentum = 0.5
 noise_batch_size = 1
 inout_dimensions_x = 28
 inout_dimensions_y = 28
-
-image_placeholder = tf.placeholder(tf.float32, [None, inout_dimensions_x * inout_dimensions_y], name='image_placeholder')
 
 
 def ceil(n):
@@ -71,7 +71,7 @@ def discriminator(image):
         single = tf.layers.dense(flattened, 1)
         out = tf.sigmoid(single)
 
-        return flattened, single, out
+        return out
 
 
 def generator():
@@ -120,21 +120,36 @@ def generator():
         return tanh
 
 
-def train():
-    return
+def train(discr_output_real):
+    ce = tf.nn.sigmoid_cross_entropy_with_logits(logits=discr_output_real, labels=tf.ones_like(discr_output_real))
+    discriminator_loss = tf.reduce_mean(ce)
+
+    trainable = tf.trainable_variables()
+    discriminator_vars = []
+
+    for t in trainable:
+        if t.name.startswith('discriminator'):
+            discriminator_vars.append(t)
+
+    discriminator_train = tf.train.AdamOptimizer(learning_rate=learning_rate, beta1=beta1_momentum).minimize(loss=discriminator_loss, var_list=discriminator_vars)
+
+    return discriminator_loss, discriminator_train, ce
 
 
-runDiscriminator = discriminator(image_placeholder)
-runGenerator = generator()
+real_image_input = tf.placeholder(tf.float32, [None, inout_dimensions_x * inout_dimensions_y], name='real_image_input')
+discr_out = discriminator(real_image_input)
+discr_loss, discr_train, ce = train(discr_out)
+
+tf.summary.scalar('Discriminator loss', discr_loss)
+merged = tf.summary.merge_all()
+writer = tf.summary.FileWriter("tensorboard/" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S") + "/")
 
 with tf.Session() as sess:
     sess.run(tf.global_variables_initializer())
 
     for batch in range(0, mnist_batch_amount):
         single_image = mnist.train.next_batch(mnist_batch_size)[0]
-        flattened, single, out = sess.run(runDiscriminator, feed_dict={image_placeholder: single_image})
-        noise = sess.run(runGenerator)
-        print("Output of discriminator (sigmoid from single): {}".format(out))
-        sample_image = noise[0].reshape([inout_dimensions_x, inout_dimensions_y])
-        plt.imshow(sample_image, cmap='Greys')
-        plt.show()
+        summary, loss, _ = sess.run([merged, discr_loss, discr_train], feed_dict={real_image_input: single_image})
+        print("Batch n: {} Loss: {}".format(batch, loss))
+        writer.add_summary(summary, batch)
+
