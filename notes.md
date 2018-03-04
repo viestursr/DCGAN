@@ -19,3 +19,7 @@ plt.imshow(sample_image, cmap='Greys')
 plt.show()
 ```
 
+### Save image
+```
+plt.imsave(fname=output_path + str(batch_number) + ".png", arr=sample_image, cmap='Greys')
+```

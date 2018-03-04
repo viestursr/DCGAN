@@ -101,3 +101,4 @@ ENV/
 .idea/
 MNIST_data/
 tensorboard/
+output/

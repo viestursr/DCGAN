@@ -12,12 +12,11 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 mnist = input_data.read_data_sets("MNIST_data/")
 
 # Hyperparams
-mnist_batch_size = 50
-mnist_batch_amount = 10000
-learning_rate = 0.00002
+batch_size = 50
+batch_amount = 10000
+learning_rate = 0.0002
 lrelu_slope = 0.2
 beta1_momentum = 0.5
-noise_batch_size = 1
 inout_dimensions_x = 28
 inout_dimensions_y = 28
 
@@ -27,7 +26,7 @@ def ceil(n):
 
 
 def discriminator(image):
-    with tf.variable_scope("discriminator"):
+    with tf.variable_scope("discriminator", reuse=tf.AUTO_REUSE):
         image = tf.reshape(image, [-1, inout_dimensions_x, inout_dimensions_y, 1])
         stride = [1, 2, 2, 1]
         padding = "SAME"
@@ -75,20 +74,20 @@ def discriminator(image):
 
 
 def generator():
-    with tf.variable_scope("generator"):
-        noise = tf.random_normal([noise_batch_size, ceil(inout_dimensions_x/2**4) * ceil(inout_dimensions_y/2**4) * 1024], stddev=0.02)
+    with tf.variable_scope("generator", reuse=tf.AUTO_REUSE):
+        noise = tf.random_normal([batch_size, ceil(inout_dimensions_x/2**4) * ceil(inout_dimensions_y/2**4) * 1024], stddev=0.02)
         noise = tf.reshape(noise, (-1, ceil(inout_dimensions_x/2**4), ceil(inout_dimensions_y/2**4), 1024))
 
         stride = [1, 2, 2, 1]
         padding = "SAME"
         filter1 = tf.Variable(tf.random_normal([5, 5, 512, 1024]))
-        output_shape1 = [noise_batch_size, ceil(inout_dimensions_x/2**3), ceil(inout_dimensions_y/2**3), 512]
+        output_shape1 = [batch_size, ceil(inout_dimensions_x/2**3), ceil(inout_dimensions_y/2**3), 512]
         filter2 = tf.Variable(tf.random_normal([5, 5, 256, 512]))
-        output_shape2 = [noise_batch_size, ceil(inout_dimensions_x/2**2), ceil(inout_dimensions_y/2**2), 256]
+        output_shape2 = [batch_size, ceil(inout_dimensions_x/2**2), ceil(inout_dimensions_y/2**2), 256]
         filter3 = tf.Variable(tf.random_normal([5, 5, 128, 256]))
-        output_shape3 = [noise_batch_size, ceil(inout_dimensions_x/2), ceil(inout_dimensions_y/2), 128]
+        output_shape3 = [batch_size, ceil(inout_dimensions_x/2), ceil(inout_dimensions_y/2), 128]
         filter4 = tf.Variable(tf.random_normal([5, 5, 1, 128]))
-        output_shape4 = [noise_batch_size, inout_dimensions_x, inout_dimensions_y, 1]
+        output_shape4 = [batch_size, inout_dimensions_x, inout_dimensions_y, 1]
 
         conv1 = tf.nn.conv2d_transpose(noise, filter1, output_shape1, stride, padding)
         batchnorm1 = tf.layers.batch_normalization(conv1, training=True)
@@ -120,36 +119,56 @@ def generator():
         return tanh
 
 
-def train(discr_output_real):
-    ce = tf.nn.sigmoid_cross_entropy_with_logits(logits=discr_output_real, labels=tf.ones_like(discr_output_real))
-    discriminator_loss = tf.reduce_mean(ce)
+def train(discr_output_real, discr_output_fake, gen_output):
+    discriminator_loss_real = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(logits=discr_output_real, labels=tf.ones_like(discr_output_real)))
+    discriminator_loss_fake = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(logits=discr_output_fake, labels=tf.zeros_like(discr_output_fake)))
+    discriminator_loss = discriminator_loss_real + discriminator_loss_fake
+
+    generator_loss = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(logits=gen_output, labels=tf.ones_like(gen_output)))
 
     trainable = tf.trainable_variables()
     discriminator_vars = []
+    generator_vars = []
 
     for t in trainable:
         if t.name.startswith('discriminator'):
             discriminator_vars.append(t)
+        elif t.name.startswith('generator'):
+            generator_vars.append(t)
 
     discriminator_train = tf.train.AdamOptimizer(learning_rate=learning_rate, beta1=beta1_momentum).minimize(loss=discriminator_loss, var_list=discriminator_vars)
+    generator_train = tf.train.AdamOptimizer(learning_rate=learning_rate, beta1=beta1_momentum).minimize(loss=generator_loss, var_list=generator_vars)
 
-    return discriminator_loss, discriminator_train, ce
+    return discriminator_loss, generator_loss, discriminator_train, generator_train
 
 
 real_image_input = tf.placeholder(tf.float32, [None, inout_dimensions_x * inout_dimensions_y], name='real_image_input')
-discr_out = discriminator(real_image_input)
-discr_loss, discr_train, ce = train(discr_out)
+gen_out = generator()
+discr_out_real = discriminator(real_image_input)
+discr_out_fake = discriminator(gen_out)
+discr_loss, gen_loss, discr_train, gen_train = train(discr_out_real, discr_out_fake, gen_out)
 
 tf.summary.scalar('Discriminator loss', discr_loss)
+tf.summary.scalar('Generator loss', gen_loss)
 merged = tf.summary.merge_all()
-writer = tf.summary.FileWriter("tensorboard/" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S") + "/")
+launch_date_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+writer = tf.summary.FileWriter("tensorboard/" + launch_date_time + "/")
+output_path = "output/" + launch_date_time + "/"
+
+if not os.path.exists(output_path):
+    os.makedirs(output_path)
 
 with tf.Session() as sess:
     sess.run(tf.global_variables_initializer())
 
-    for batch in range(0, mnist_batch_amount):
-        single_image = mnist.train.next_batch(mnist_batch_size)[0]
-        summary, loss, _ = sess.run([merged, discr_loss, discr_train], feed_dict={real_image_input: single_image})
-        print("Batch n: {} Loss: {}".format(batch, loss))
+    for batch in range(0, batch_amount):
+        single_image = mnist.train.next_batch(batch_size)[0]
+        summary, discr_loss_out, gen_loss_out, _, _ = sess.run([merged, discr_loss, gen_loss, discr_train, gen_train], feed_dict={real_image_input: single_image})
+        print("Batch n: {} Discr loss: {} Gen loss: {}".format(batch, discr_loss_out, gen_loss_out))
         writer.add_summary(summary, batch)
+
+        if batch % 100 == 0:
+            generated_image = sess.run(gen_out)
+            generated_image = generated_image[0].reshape([28, 28])
+            plt.imsave(fname=output_path + str(batch) + ".png", arr=generated_image, cmap='Greys')
 
