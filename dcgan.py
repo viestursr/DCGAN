@@ -11,7 +11,7 @@ import time
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 
 # MNIST data set
-mnist = input_data.read_data_sets("MNIST_data/", one_hot=True)
+mnist = input_data.read_data_sets("MNIST_data/", one_hot=True, reshape=[])
 
 # Hyperparams
 batch_size = 100
@@ -125,27 +125,35 @@ def generator():
         return tanh
 
 
-def train(discr_output_real, discr_output_fake, discr_out_real_logits, discr_out_fake_logits):
-    discriminator_loss_real = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(logits=discr_out_real_logits, labels=tf.ones_like(discr_output_real) * label_smoothing))
-    discriminator_loss_fake = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(logits=discr_out_fake_logits, labels=tf.zeros_like(discr_output_fake)))
+def trainDiscr(discr_real, discr_fake, discr_real_logits, discr_fake_logits):
+    discriminator_loss_real = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(logits=discr_real_logits, labels=tf.ones_like(discr_real) * label_smoothing))
+    discriminator_loss_fake = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(logits=discr_fake_logits, labels=tf.zeros_like(discr_fake)))
     discriminator_loss = discriminator_loss_real + discriminator_loss_fake
-
-    generator_loss = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(logits=discr_out_fake_logits, labels=tf.ones_like(discr_output_fake) * label_smoothing))
 
     trainable = tf.trainable_variables()
     discriminator_vars = []
-    generator_vars = []
 
     for t in trainable:
         if t.name.startswith('discriminator'):
             discriminator_vars.append(t)
-        elif t.name.startswith('generator'):
-            generator_vars.append(t)
 
     discriminator_train = tf.train.AdamOptimizer(learning_rate=learning_rate, beta1=beta1_momentum).minimize(loss=discriminator_loss, var_list=discriminator_vars)
+    return discriminator_loss, discriminator_train
+
+
+def trainGen(discr_fake, discr_fake_logits):
+    generator_loss = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(logits=discr_fake_logits, labels=tf.ones_like(discr_fake) * label_smoothing))
+
+    trainable = tf.trainable_variables()
+    generator_vars = []
+
+    for t in trainable:
+        if t.name.startswith('generator'):
+            generator_vars.append(t)
+
     generator_train = tf.train.AdamOptimizer(learning_rate=learning_rate, beta1=beta1_momentum).minimize(loss=generator_loss, var_list=generator_vars)
 
-    return discriminator_loss, generator_loss, discriminator_train, generator_train, discr_output_fake
+    return generator_loss, generator_train
 
 
 real_image_input = tf.placeholder(tf.float32, [None, inout_dimensions_x, inout_dimensions_y, 1], name='real_image_input')
@@ -153,11 +161,13 @@ noise_input = tf.placeholder(tf.float32, [None, 1, 1, noise_dimension], name='no
 gen_out = generator()
 discr_out_real, discr_out_real_logits = discriminator(real_image_input)
 discr_out_fake, discr_out_fake_logits = discriminator(gen_out, reuse_in=True)
-discr_loss, gen_loss, discr_train, gen_train, fake_logits = train(discr_out_real, discr_out_fake, discr_out_real_logits, discr_out_fake_logits)
+
+discr_loss, discr_train = trainDiscr(discr_out_real, discr_out_fake, discr_out_real_logits, discr_out_fake_logits)
+gen_loss, gen_train = trainGen(discr_out_fake, discr_out_fake_logits)
 
 tf.summary.scalar('Discriminator loss', discr_loss)
 tf.summary.scalar('Generator loss', gen_loss)
-tf.summary.image('Generated image', gen_out)
+tf.summary.image('Generated image', gen_out, max_outputs=10)
 merged = tf.summary.merge_all()
 launch_date_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
 writer = tf.summary.FileWriter("tensorboard/" + launch_date_time + "/")
@@ -165,8 +175,8 @@ writer = tf.summary.FileWriter("tensorboard/" + launch_date_time + "/")
 with tf.Session() as sess:
     sess.run(tf.global_variables_initializer())
 
-    training_set = mnist.train.images.reshape(mnist.train.images.shape + (1, 1,))
-    training_set = tf.image.resize_images(training_set, [64, 64]).eval()
+    training_set = tf.image.resize_images(mnist.train.images, [64, 64]).eval()
+
     global_counter = 0
 
     for epoch in range(1, epoch_count):
@@ -176,17 +186,25 @@ with tf.Session() as sess:
             global_counter = global_counter + 1
 
             single_image = training_set[i*batch_size:(i+1)*batch_size]
-            noise = np.random.uniform(-1, 1, size=[batch_size, 1, 1, noise_dimension])
 
-            discr_loss_out, gen_loss_out, _, _, flo = sess.run([discr_loss, gen_loss, discr_train, gen_train, fake_logits], feed_dict={real_image_input: single_image, noise_input: noise})
+            # Update discriminator
+            noise = np.random.normal(0, 1, size=[batch_size, 1, 1, noise_dimension])
+            discr_loss_out, _ = sess.run([discr_loss, discr_train], feed_dict={real_image_input: single_image, noise_input: noise})
 
-            # if i == (mnist.train.num_examples // batch_size) - 1:
-            #     print("Epoch n: {} | Discr loss: {} | Gen loss: {} | Epoch time: {} sec".format(epoch, discr_loss_out, gen_loss_out, time.time() - epoch_start_time))
-            #     summary = sess.run(merged, feed_dict={real_image_input: single_image, noise_input: noise})
-            #     writer.add_summary(summary, epoch)
+            # Update generator
+            noise = np.random.normal(0, 1, size=[batch_size, 1, 1, noise_dimension])
+            gen_loss_out, _ = sess.run([gen_loss, gen_train], feed_dict={real_image_input: single_image, noise_input: noise})
 
-            if global_counter % 100 == 0:
-                print("Batch n: {} | Discr loss: {} | Gen loss: {}".format(global_counter, discr_loss_out, gen_loss_out))
+            if i == (mnist.train.num_examples // batch_size) - 1:
+                print("Epoch n: {} | Discr loss: {} | Gen loss: {} | Epoch time: {} sec".format(epoch, discr_loss_out, gen_loss_out, time.time() - epoch_start_time))
                 summary = sess.run(merged, feed_dict={real_image_input: single_image, noise_input: noise})
-                writer.add_summary(summary, global_counter)
+                writer.add_summary(summary, epoch)
+
+                noise = np.random.normal(0, 1, size=[batch_size, 1, 1, noise_dimension])
+                noise_o = sess.run(gen_out, feed_dict={noise_input: noise})
+
+            # if global_counter % 100 == 0:
+            #     print("Batch n: {} | Discr loss: {} | Gen loss: {}".format(global_counter, discr_loss_out, gen_loss_out))
+            #     summary = sess.run(merged, feed_dict={real_image_input: single_image, noise_input: noise})
+            #     writer.add_summary(summary, global_counter)
 
