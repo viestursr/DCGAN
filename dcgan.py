@@ -220,12 +220,11 @@ with tf.Session() as sess:
 
             image_batch = training_set[i*batch_size:(i+1)*batch_size]
 
-            # Update discriminator
             noise = np.random.normal(0, 1, size=[batch_size, 1, 1, noise_dimension])
+            # Update discriminator
             discr_loss_out, _ = sess.run([discr_loss, discr_train], feed_dict={real_image_input: image_batch, noise_input: noise})
 
             # Update generator
-            noise = np.random.normal(0, 1, size=[batch_size, 1, 1, noise_dimension])
             gen_loss_out, _ = sess.run([gen_loss, gen_train], feed_dict={real_image_input: image_batch, noise_input: noise})
 
             if i == (len(training_set) // batch_size) - 1:
