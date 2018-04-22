@@ -6,6 +6,7 @@ import math
 import datetime
 import numpy as np
 import time
+import glob
 
 # Just to avoid warnings. Disable this from time to time during development
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
@@ -13,10 +14,12 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 # MNIST data set
 mnist = input_data.read_data_sets("MNIST_data/", one_hot=True, reshape=[])
 
+data_set = "celeba"
+
 # Hyperparams
-batch_size = 100
+batch_size = 128
 noise_dimension = 100
-epoch_count = 20
+epoch_count = 100
 learning_rate = 0.0002
 lrelu_slope = 0.2
 beta1_momentum = 0.5
@@ -25,13 +28,36 @@ label_smoothing = 0.9
 inout_dimensions_x = 64
 inout_dimensions_y = 64
 
+channels = 3
+
+if data_set == "mnist":
+    channels = 1
+
+
+def get_dataset():
+    if data_set == "mnist":
+        print("Preparing mnist dataset...")
+        dataset = tf.image.resize_images(mnist.train.images, [64, 64]).eval()
+        dataset = (dataset - 0.5) / 0.5
+        print(dataset.shape)
+        print("mnist dataset ready")
+        return dataset
+
+    if data_set == "celeba":
+        print("Preparing celebA dataset. This will take a while...")
+        files = list(glob.glob("celeba/*"))
+
+        dataset = np.array([((plt.imread(f) - 0.5) / 0.5) for f in files])
+        np.random.shuffle(dataset)
+
+        print(dataset.shape)
+
+        print("celebA dataset ready")
+        return dataset
+
 
 def ceil(n):
     return math.ceil(n)
-
-
-def lrelu(x, th=0.2):
-    return tf.maximum(th * x, x)
 
 
 def discriminator(image, reuse_in=None):
@@ -93,7 +119,7 @@ def generator():
         filter1 = 512
         filter2 = 256
         filter3 = 128
-        filter4 = 1 # This is the channel amount of final layer
+        filter4 = channels # This is the channel amount of final layer
 
         conv1 = tf.layers.conv2d_transpose(noise_reshaped, filter1, kernel_size, stride, padding)
         batchnorm1 = tf.layers.batch_normalization(conv1, training=True)
@@ -125,7 +151,7 @@ def generator():
         return tanh
 
 
-def trainDiscr(discr_real, discr_fake, discr_real_logits, discr_fake_logits):
+def train_discr(discr_real, discr_fake, discr_real_logits, discr_fake_logits):
     discriminator_loss_real = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(logits=discr_real_logits, labels=tf.ones_like(discr_real) * label_smoothing))
     discriminator_loss_fake = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(logits=discr_fake_logits, labels=tf.zeros_like(discr_fake)))
     discriminator_loss = discriminator_loss_real + discriminator_loss_fake
@@ -141,7 +167,7 @@ def trainDiscr(discr_real, discr_fake, discr_real_logits, discr_fake_logits):
     return discriminator_loss, discriminator_train
 
 
-def trainGen(discr_fake, discr_fake_logits):
+def train_gen(discr_fake, discr_fake_logits):
     generator_loss = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(logits=discr_fake_logits, labels=tf.ones_like(discr_fake) * label_smoothing))
 
     trainable = tf.trainable_variables()
@@ -156,14 +182,14 @@ def trainGen(discr_fake, discr_fake_logits):
     return generator_loss, generator_train
 
 
-real_image_input = tf.placeholder(tf.float32, [None, inout_dimensions_x, inout_dimensions_y, 1], name='real_image_input')
+real_image_input = tf.placeholder(tf.float32, [None, inout_dimensions_x, inout_dimensions_y, channels], name='real_image_input')
 noise_input = tf.placeholder(tf.float32, [None, 1, 1, noise_dimension], name='noise_input')
 gen_out = generator()
 discr_out_real, discr_out_real_logits = discriminator(real_image_input)
 discr_out_fake, discr_out_fake_logits = discriminator(gen_out, reuse_in=True)
 
-discr_loss, discr_train = trainDiscr(discr_out_real, discr_out_fake, discr_out_real_logits, discr_out_fake_logits)
-gen_loss, gen_train = trainGen(discr_out_fake, discr_out_fake_logits)
+discr_loss, discr_train = train_discr(discr_out_real, discr_out_fake, discr_out_real_logits, discr_out_fake_logits)
+gen_loss, gen_train = train_gen(discr_out_fake, discr_out_fake_logits)
 
 tf.summary.scalar('Discriminator loss', discr_loss)
 tf.summary.scalar('Generator loss', gen_loss)
@@ -175,36 +201,35 @@ writer = tf.summary.FileWriter("tensorboard/" + launch_date_time + "/")
 with tf.Session() as sess:
     sess.run(tf.global_variables_initializer())
 
-    training_set = tf.image.resize_images(mnist.train.images, [64, 64]).eval()
+    bench_noise = np.random.normal(0, 1, size=[batch_size, 1, 1, noise_dimension])
+
+    training_set = get_dataset()
 
     global_counter = 0
+
+    print("Training started")
+
+    summary = sess.run(merged, feed_dict={real_image_input: training_set[0*batch_size:(0+1)*batch_size], noise_input: bench_noise})
+    writer.add_summary(summary, global_counter)
 
     for epoch in range(1, epoch_count):
         epoch_start_time = time.time()
 
-        for i in range(mnist.train.num_examples // batch_size):
-            global_counter = global_counter + 1
+        for i in range(len(training_set) // batch_size):
+            global_counter = global_counter + batch_size
 
-            single_image = training_set[i*batch_size:(i+1)*batch_size]
+            image_batch = training_set[i*batch_size:(i+1)*batch_size]
 
             # Update discriminator
             noise = np.random.normal(0, 1, size=[batch_size, 1, 1, noise_dimension])
-            discr_loss_out, _ = sess.run([discr_loss, discr_train], feed_dict={real_image_input: single_image, noise_input: noise})
+            discr_loss_out, _ = sess.run([discr_loss, discr_train], feed_dict={real_image_input: image_batch, noise_input: noise})
 
             # Update generator
             noise = np.random.normal(0, 1, size=[batch_size, 1, 1, noise_dimension])
-            gen_loss_out, _ = sess.run([gen_loss, gen_train], feed_dict={real_image_input: single_image, noise_input: noise})
+            gen_loss_out, _ = sess.run([gen_loss, gen_train], feed_dict={real_image_input: image_batch, noise_input: noise})
 
-            if i == (mnist.train.num_examples // batch_size) - 1:
-                print("Epoch n: {} | Discr loss: {} | Gen loss: {} | Epoch time: {} sec".format(epoch, discr_loss_out, gen_loss_out, time.time() - epoch_start_time))
-                summary = sess.run(merged, feed_dict={real_image_input: single_image, noise_input: noise})
-                writer.add_summary(summary, epoch)
-
-                noise = np.random.normal(0, 1, size=[batch_size, 1, 1, noise_dimension])
-                noise_o = sess.run(gen_out, feed_dict={noise_input: noise})
-
-            # if global_counter % 100 == 0:
-            #     print("Batch n: {} | Discr loss: {} | Gen loss: {}".format(global_counter, discr_loss_out, gen_loss_out))
-            #     summary = sess.run(merged, feed_dict={real_image_input: single_image, noise_input: noise})
-            #     writer.add_summary(summary, global_counter)
+            if i == (len(training_set) // batch_size) - 1:
+                print("Epoch n: {} | Discr loss: {} | Gen loss: {} | Images shown: {} | Epoch time: {} sec".format(epoch, discr_loss_out, gen_loss_out, global_counter ,time.time() - epoch_start_time))
+                summary = sess.run(merged, feed_dict={real_image_input: image_batch, noise_input: bench_noise})
+                writer.add_summary(summary, global_counter)
 
