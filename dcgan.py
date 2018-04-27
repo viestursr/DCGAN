@@ -27,8 +27,11 @@ normal_distribution_stddev = 0.02
 label_smoothing = 0.9
 inout_dimensions_x = 64
 inout_dimensions_y = 64
-
 channels = 3
+
+# Relative path directory to load saved model from. If left empty, new training will start
+load_saved_model = 0
+
 
 if data_set == "mnist":
     channels = 1
@@ -191,6 +194,7 @@ discr_out_fake, discr_out_fake_logits = discriminator(gen_out, reuse_in=True)
 discr_loss, discr_train = train_discr(discr_out_real, discr_out_fake, discr_out_real_logits, discr_out_fake_logits)
 gen_loss, gen_train = train_gen(discr_out_fake, discr_out_fake_logits)
 
+saver = tf.train.Saver()
 tf.summary.scalar('Discriminator loss', discr_loss)
 tf.summary.scalar('Generator loss', gen_loss)
 tf.summary.image('Generated image', gen_out, max_outputs=10)
@@ -198,8 +202,16 @@ merged = tf.summary.merge_all()
 launch_date_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
 writer = tf.summary.FileWriter("tensorboard/" + launch_date_time + "/")
 
+output_path = "runs/" + launch_date_time + "/"
+
+if not os.path.exists(output_path):
+    os.makedirs(output_path)
+
 with tf.Session() as sess:
-    sess.run(tf.global_variables_initializer())
+    if load_saved_model:
+        saver.restore(sess, load_saved_model+"/model.ckpt")
+    else:
+        sess.run(tf.global_variables_initializer())
 
     bench_noise = np.random.normal(0, 1, size=[batch_size, 1, 1, noise_dimension])
 
@@ -231,4 +243,12 @@ with tf.Session() as sess:
                 print("Epoch n: {} | Discr loss: {} | Gen loss: {} | Images shown: {} | Epoch time: {} sec".format(epoch, discr_loss_out, gen_loss_out, global_counter ,time.time() - epoch_start_time))
                 summary = sess.run(merged, feed_dict={real_image_input: image_batch, noise_input: bench_noise})
                 writer.add_summary(summary, global_counter)
+                save = saver.save(sess, output_path + "model.ckpt")
+
+            if ((global_counter % (batch_size * 1000)) == 0) & len(training_set) > (batch_size * 1000):
+                # Save an update every 1000 batches, so that we can track larger datasets more precisely
+                print("Epoch n: {} | Discr loss: {} | Gen loss: {} | Images shown: {} | Epoch time: {} sec".format(epoch, discr_loss_out, gen_loss_out, global_counter, time.time() - epoch_start_time))
+                summary = sess.run(merged, feed_dict={real_image_input: image_batch, noise_input: bench_noise})
+                writer.add_summary(summary, global_counter)
+                save = saver.save(sess, output_path + "model.ckpt")
 

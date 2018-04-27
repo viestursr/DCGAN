@@ -104,3 +104,4 @@ tensorboard/
 output/
 celebA/
 lsun/
+runs/
