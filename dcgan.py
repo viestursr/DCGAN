@@ -14,7 +14,7 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 # MNIST data set
 mnist = input_data.read_data_sets("MNIST_data/", one_hot=True, reshape=[])
 
-data_set = "celeba"
+data_set = "mnist"
 
 # Hyperparams
 batch_size = 128
@@ -31,6 +31,11 @@ channels = 3
 
 # Relative path directory to load saved model from. If left empty, new training will start
 load_saved_model = 0
+
+# Only generate images from a loaded (preferably) model
+generate_only = 0
+# How many images to generate
+generate_only_count = 500
 
 
 if data_set == "mnist":
@@ -122,7 +127,7 @@ def generator():
         filter1 = 512
         filter2 = 256
         filter3 = 128
-        filter4 = channels # This is the channel amount of final layer
+        filter4 = channels  # This is the channel amount of final layer
 
         conv1 = tf.layers.conv2d_transpose(noise_reshaped, filter1, kernel_size, stride, padding)
         batchnorm1 = tf.layers.batch_normalization(conv1, training=True)
@@ -202,7 +207,7 @@ merged = tf.summary.merge_all()
 launch_date_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
 writer = tf.summary.FileWriter("tensorboard/" + launch_date_time + "/")
 
-output_path = "runs/" + launch_date_time + "/"
+output_path = "runs/" + data_set + "/" + launch_date_time + "/"
 
 if not os.path.exists(output_path):
     os.makedirs(output_path)
@@ -214,6 +219,32 @@ with tf.Session() as sess:
         sess.run(tf.global_variables_initializer())
 
     bench_noise = np.random.normal(0, 1, size=[batch_size, 1, 1, noise_dimension])
+
+    if generate_only:
+        generations_path = "generations/" + data_set + "/" + launch_date_time + "/"
+
+        if not os.path.exists(generations_path):
+            os.makedirs(generations_path)
+
+        for i in range (0, generate_only_count):
+            noise = np.random.normal(0, 1, size=[batch_size, 1, 1, noise_dimension])
+            generated_images = sess.run(gen_out, feed_dict={noise_input: noise})
+            cmap = None
+
+            if data_set == "mnist":
+                cmap = "Greys"
+                image = generated_images[0].reshape([64, 64])
+                image = (image - 0.5) / 0.5
+            else:
+                buffer = tf.summary.image('Generated image', generated_images, max_outputs=1).eval()
+                buffer_prefix = 39 + len(str(i + 1))
+                parsed_buffer = buffer[buffer_prefix:]
+                image = tf.image.decode_png(parsed_buffer).eval()
+
+            plt.imsave(fname=generations_path + str(i) + ".png", arr=image, cmap=cmap)
+
+        print("Image generation complete. Exiting.")
+        exit()
 
     training_set = get_dataset()
 
