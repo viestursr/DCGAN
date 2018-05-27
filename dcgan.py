@@ -44,6 +44,7 @@ if data_set == "mnist":
     channels = 1
 
 
+# Gets and prepares data from the needed dataset
 def get_dataset():
     if data_set == "mnist":
         print("Preparing mnist dataset...")
@@ -88,6 +89,7 @@ def ceil(n):
     return math.ceil(n)
 
 
+# Discriminator network
 def discriminator(image, reuse_in=None):
     with tf.variable_scope("discriminator", reuse=reuse_in):
         stride = (2, 2)
@@ -99,8 +101,6 @@ def discriminator(image, reuse_in=None):
         filter4 = 1024
 
         conv1 = tf.layers.conv2d(image, filter1, kernel_size, stride, padding)
-        # Batch normalization is not applied to input layer since it
-        # "resulted in sample oscillation and model instability" (from paper)
         relu1 = tf.nn.leaky_relu(conv1, lrelu_slope)
 
         print("Input shape: {}".format(image.shape))
@@ -125,17 +125,15 @@ def discriminator(image, reuse_in=None):
 
         print("Shape after 4th convolution: {}".format(conv4.shape))
 
-        # For the discriminator, the last convolution layer is flattened (from paper)
         flattened = tf.reshape(relu4, (batch_size, ceil(inout_dimensions_x/2**4) * ceil(inout_dimensions_y/2**4) * 1024))
 
-        # For the discriminator, the last convolution layer is flattened
-        # and then fed into a single sigmoid output (from paper)
         single = tf.layers.dense(flattened, 1)
         out = tf.sigmoid(single)
 
         return out, single
 
 
+# Generator network
 def generator():
     with tf.variable_scope("generator"):
         dense_noise = tf.layers.dense(inputs=noise_input, units=ceil(inout_dimensions_x/2**4) * ceil(inout_dimensions_y/2**4) * 1024)
@@ -170,8 +168,6 @@ def generator():
         print("Noise shape after 3rd convolution: {}".format(conv3.shape))
 
         conv4 = tf.layers.conv2d_transpose(relu3, filter4, kernel_size, stride, padding)
-        # Batch normalization is not applied to output layer since it
-        # "resulted in sample oscillation and model instability" (from paper)
         tanh = tf.nn.tanh(conv4)
 
         print("Noise shape after 4th convolution: {}".format(conv4.shape))
@@ -179,6 +175,7 @@ def generator():
         return tanh
 
 
+# Discriminator training operations
 def train_discr(discr_real, discr_fake, discr_real_logits, discr_fake_logits):
     discriminator_loss_real = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(logits=discr_real_logits, labels=tf.ones_like(discr_real) * label_smoothing))
     discriminator_loss_fake = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(logits=discr_fake_logits, labels=tf.zeros_like(discr_fake)))
@@ -195,6 +192,7 @@ def train_discr(discr_real, discr_fake, discr_real_logits, discr_fake_logits):
     return discriminator_loss, discriminator_train, discriminator_loss_real, discriminator_loss_fake
 
 
+# Generator training operations
 def train_gen(discr_fake, discr_fake_logits):
     generator_loss = tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(logits=discr_fake_logits, labels=tf.ones_like(discr_fake) * label_smoothing))
 
