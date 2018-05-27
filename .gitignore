@@ -106,3 +106,5 @@ celebA/
 lsun/
 runs/
 generations/
+cifar10/
+inception_data/

@@ -7,6 +7,8 @@ import datetime
 import numpy as np
 import time
 import glob
+from tqdm import tqdm
+import gc
 
 # Just to avoid warnings. Disable this from time to time during development
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
@@ -29,13 +31,13 @@ inout_dimensions_x = 64
 inout_dimensions_y = 64
 channels = 3
 
-# Relative path directory to load saved model from. If left empty, new training will start
-load_saved_model = 0
+# Relative path file to load saved model from. If left empty, new training will start
+load_saved_model = ""
 
 # Only generate images from a loaded (preferably) model
 generate_only = 0
 # How many images to generate
-generate_only_count = 500
+generate_only_count = 100
 
 
 if data_set == "mnist":
@@ -47,20 +49,38 @@ def get_dataset():
         print("Preparing mnist dataset...")
         dataset = tf.image.resize_images(mnist.train.images, [64, 64]).eval()
         dataset = (dataset - 0.5) / 0.5
+
         print(dataset.shape)
         print("mnist dataset ready")
+
         return dataset
 
     if data_set == "celeba":
         print("Preparing celebA dataset. This will take a while...")
         files = list(glob.glob("celeba/*"))
-
         dataset = np.array([((plt.imread(f) - 0.5) / 0.5) for f in files])
         np.random.shuffle(dataset)
 
         print(dataset.shape)
-
         print("celebA dataset ready")
+
+        return dataset
+
+    if data_set == "lsun":
+        print("Preparing LSUN dataset.")
+        files = list(glob.glob("lsun/*"))
+
+        return files
+
+    if data_set == "cifar10":
+        print("Preparing CIFAR10 dataset...")
+        files = list(glob.glob("cifar10/*"))
+        dataset = np.array([((plt.imread(f) - 0.5) / 0.5) for f in files])
+        np.random.shuffle(dataset)
+
+        print(dataset.shape)
+        print("CIFAR10 dataset ready")
+
         return dataset
 
 
@@ -172,7 +192,7 @@ def train_discr(discr_real, discr_fake, discr_real_logits, discr_fake_logits):
             discriminator_vars.append(t)
 
     discriminator_train = tf.train.AdamOptimizer(learning_rate=learning_rate, beta1=beta1_momentum).minimize(loss=discriminator_loss, var_list=discriminator_vars)
-    return discriminator_loss, discriminator_train
+    return discriminator_loss, discriminator_train, discriminator_loss_real, discriminator_loss_fake
 
 
 def train_gen(discr_fake, discr_fake_logits):
@@ -196,25 +216,28 @@ gen_out = generator()
 discr_out_real, discr_out_real_logits = discriminator(real_image_input)
 discr_out_fake, discr_out_fake_logits = discriminator(gen_out, reuse_in=True)
 
-discr_loss, discr_train = train_discr(discr_out_real, discr_out_fake, discr_out_real_logits, discr_out_fake_logits)
+discr_loss, discr_train, discr_loss_real, discr_loss_fake = train_discr(discr_out_real, discr_out_fake, discr_out_real_logits, discr_out_fake_logits)
 gen_loss, gen_train = train_gen(discr_out_fake, discr_out_fake_logits)
 
-saver = tf.train.Saver()
-tf.summary.scalar('Discriminator loss', discr_loss)
+saver = tf.train.Saver(max_to_keep=20)
+tf.summary.scalar('Discriminator loss real', discr_loss_real)
+tf.summary.scalar('Discriminator loss fake', discr_loss_fake)
+tf.summary.scalar('Discriminator loss total', discr_loss)
 tf.summary.scalar('Generator loss', gen_loss)
-tf.summary.image('Generated image', gen_out, max_outputs=10)
+tf.summary.image('Generated image', gen_out, max_outputs=15)
+
 merged = tf.summary.merge_all()
 launch_date_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-writer = tf.summary.FileWriter("tensorboard/" + launch_date_time + "/")
-
 output_path = "runs/" + data_set + "/" + launch_date_time + "/"
+
+writer = tf.summary.FileWriter(output_path)
 
 if not os.path.exists(output_path):
     os.makedirs(output_path)
 
 with tf.Session() as sess:
     if load_saved_model:
-        saver.restore(sess, load_saved_model+"/model.ckpt")
+        saver.restore(sess, load_saved_model)
     else:
         sess.run(tf.global_variables_initializer())
 
@@ -226,22 +249,37 @@ with tf.Session() as sess:
         if not os.path.exists(generations_path):
             os.makedirs(generations_path)
 
-        for i in range (0, generate_only_count):
+        global_generation_counter = 0
+        single_input = tf.placeholder(tf.float32, [None, inout_dimensions_x, inout_dimensions_y, channels], name='single_input')
+        input_img = tf.placeholder(tf.string)
+        buffer = tf.summary.image('Generated image', single_input, max_outputs=1)
+        image = tf.image.decode_png(input_img)
+
+        for i in tqdm(range (0, generate_only_count // 100)):
             noise = np.random.normal(0, 1, size=[batch_size, 1, 1, noise_dimension])
             generated_images = sess.run(gen_out, feed_dict={noise_input: noise})
             cmap = None
 
-            if data_set == "mnist":
-                cmap = "Greys"
-                image = generated_images[0].reshape([64, 64])
-                image = (image - 0.5) / 0.5
-            else:
-                buffer = tf.summary.image('Generated image', generated_images, max_outputs=1).eval()
-                buffer_prefix = 39 + len(str(i + 1))
-                parsed_buffer = buffer[buffer_prefix:]
-                image = tf.image.decode_png(parsed_buffer).eval()
+            for j in range(0, 100):
+                if data_set == "mnist":
+                    cmap = "Greys"
+                    image_g = generated_images[j].reshape([64, 64])
+                    image_out = (image_g - 0.5) / 0.5
+                else:
+                    single = generated_images[j]
+                    single = np.expand_dims(single, axis=0)
 
-            plt.imsave(fname=generations_path + str(i) + ".png", arr=image, cmap=cmap)
+                    buffer_out = sess.run(buffer, feed_dict={single_input: single})
+
+                    buffer_prefix = 40
+                    parsed_buffer = buffer_out[buffer_prefix:]
+
+                    image_out = sess.run(image, feed_dict={input_img: parsed_buffer})
+
+                plt.imsave(fname=generations_path + str(global_generation_counter) + ".png", arr=image_out, cmap=cmap)
+                global_generation_counter += 1
+
+            gc.collect()
 
         print("Image generation complete. Exiting.")
         exit()
@@ -251,8 +289,11 @@ with tf.Session() as sess:
     global_counter = 0
 
     print("Training started")
+    current_time = datetime.datetime.now().strftime("%Y.%m.%d-%H:%M:%S")
+    with open(output_path + "log.txt", "a") as logfile:
+        logfile.write("{} | Training started\n".format(current_time))
 
-    summary = sess.run(merged, feed_dict={real_image_input: training_set[0*batch_size:(0+1)*batch_size], noise_input: bench_noise})
+    summary = sess.run(merged, feed_dict={real_image_input: np.random.rand(batch_size, inout_dimensions_x, inout_dimensions_y, channels), noise_input: bench_noise})
     writer.add_summary(summary, global_counter)
 
     for epoch in range(1, epoch_count):
@@ -261,7 +302,17 @@ with tf.Session() as sess:
         for i in range(len(training_set) // batch_size):
             global_counter = global_counter + batch_size
 
-            image_batch = training_set[i*batch_size:(i+1)*batch_size]
+            if data_set == "lsun":
+                local_dataset = np.array([])
+                for f_idx in range(i*batch_size, (i+1)*batch_size):
+                    if len(local_dataset) == 0:
+                        local_dataset = np.array([((plt.imread(training_set[f_idx]) - 0.5) / 0.5)])
+                    else:
+                        local_dataset = np.concatenate((local_dataset, np.array([((plt.imread(training_set[f_idx]) - 0.5) / 0.5)])), 0)
+
+                image_batch = local_dataset
+            else:
+                image_batch = training_set[i*batch_size:(i+1)*batch_size]
 
             noise = np.random.normal(0, 1, size=[batch_size, 1, 1, noise_dimension])
             # Update discriminator
@@ -271,15 +322,22 @@ with tf.Session() as sess:
             gen_loss_out, _ = sess.run([gen_loss, gen_train], feed_dict={real_image_input: image_batch, noise_input: noise})
 
             if i == (len(training_set) // batch_size) - 1:
-                print("Epoch n: {} | Discr loss: {} | Gen loss: {} | Images shown: {} | Epoch time: {} sec".format(epoch, discr_loss_out, gen_loss_out, global_counter ,time.time() - epoch_start_time))
+                current_time = datetime.datetime.now().strftime("%Y.%m.%d-%H:%M:%S")
+                print("{} | Epoch n: {} | Discr loss: {} | Gen loss: {} | Images shown: {} | Epoch time: {} sec".format(current_time, epoch, discr_loss_out, gen_loss_out, global_counter ,time.time() - epoch_start_time))
                 summary = sess.run(merged, feed_dict={real_image_input: image_batch, noise_input: bench_noise})
                 writer.add_summary(summary, global_counter)
-                save = saver.save(sess, output_path + "model.ckpt")
+                save = saver.save(sess, output_path + "model" + str(epoch) + ".ckpt")
+                with open(output_path + "log.txt", "a") as logfile:
+                    logfile.write("{} | Epoch n: {} | Discr loss: {} | Gen loss: {} | Images shown: {} | Epoch time: {} sec\n".format(current_time, epoch, discr_loss_out, gen_loss_out, global_counter ,time.time() - epoch_start_time))
 
-            if ((global_counter % (batch_size * 1000)) == 0) & len(training_set) > (batch_size * 1000):
+            if ((global_counter % (batch_size * 1000)) == 0) & (len(training_set) > (batch_size * 1000)):
                 # Save an update every 1000 batches, so that we can track larger datasets more precisely
-                print("Epoch n: {} | Discr loss: {} | Gen loss: {} | Images shown: {} | Epoch time: {} sec".format(epoch, discr_loss_out, gen_loss_out, global_counter, time.time() - epoch_start_time))
+                current_time = datetime.datetime.now().strftime("%Y.%m.%d-%H:%M:%S")
+                print("{} | Epoch n: {} | Discr loss: {} | Gen loss: {} | Images shown: {} | Epoch time: {} sec".format(current_time, epoch, discr_loss_out, gen_loss_out, global_counter ,time.time() - epoch_start_time))
                 summary = sess.run(merged, feed_dict={real_image_input: image_batch, noise_input: bench_noise})
                 writer.add_summary(summary, global_counter)
-                save = saver.save(sess, output_path + "model.ckpt")
+                save = saver.save(sess, output_path + "model" + str(global_counter) + ".ckpt")
+                with open(output_path + "log.txt", "a") as logfile:
+                    logfile.write("{} | Epoch n: {} | Discr loss: {} | Gen loss: {} | Images shown: {} | Epoch time until now: {} sec\n".format(current_time, epoch, discr_loss_out, gen_loss_out, global_counter ,time.time() - epoch_start_time))
+
 
